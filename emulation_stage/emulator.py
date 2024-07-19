@@ -20,6 +20,10 @@ import concurrent.futures
 import threading
 import logging
 import logging.handlers
+import os
+import glob
+import shutil
+
 
 my_logger = logging.getLogger('MyLogger')
 my_logger.setLevel(logging.DEBUG)
@@ -32,24 +36,30 @@ REMOTE_CONTROLLER_IP = "127.0.0.1"
 kernel_output = open('/dev/kmsg', 'w')
 status_report_delayed_shift = -0.5
 
-if len(sys.argv) != 2:
-    print("need to specify the path information file!")
+if len(sys.argv) != 6:
+    print("6 args, path_info_file, start_times, switch_queue_size, protocol, run")
     exit()
 
 intermediate_hop_num = 0
 frame_length = 1
 path_info_file = sys.argv[1]
 
+start_times = list(map(float, sys.argv[2].strip('[]').split(',')))
+NODES = len(start_times)
+
+USER = 'mihai'
+
 last_routing_path = ["NULL"]
 current_routing_path = ["NULL"]
 last_node_delay = ["NULL"]
 current_node_delay = ["NULL"]
 
-bent_pipe_link_bandwidth = 150
+bent_pipe_link_bandwidth = 100
 unitialized_bent_pipe_delay = '0.01ms'
-switch_queue_size = 5000
 
-NODES = 1
+switch_queue_size = int(sys.argv[3])
+protocol = sys.argv[4]
+run = sys.argv[5]
 
 switches = []
 
@@ -306,9 +316,70 @@ def read_link_info(input_file_name):
     in_file.close()
     return link_info_all_cycles
 
+def mkdir(path):
+    try:
+        os.makedirs(path)
+    except OSError as exc:
+        if not (os.path.isdir(path) and os.path.exists(path)):
+            raise
+def rmdir(path):
+    try:
+        shutil.rmtree(path)
+    except OSError as exc:
+        if not (os.path.isdir(path) and os.path.exists(path)):
+            raise
+
+def delete_old_files():
+    for filename in glob.glob('iperf*'):
+        if os.path.isfile(filename):
+            os.remove(filename)
+            my_logger.info(f"Deleted old file: {filename}")
+    for filename in glob.glob('ping*'):
+        if os.path.isfile(filename):
+            os.remove(filename)
+            my_logger.info(f"Deleted old file: {filename}")
+
+orca_flow_counter = 0
+
+def start_orca_client(server, outpath, server_ip, start_time):
+    threading.Timer(start_time, lambda: server.cmd(f'sudo -u {USER} /home/{USER}/Orca/receiver.sh {server_ip} 4444 0 > {outpath}orca_{server.name}.json &')).start()
+
+def start_orca_server(client, outpath, start_time, duration):
+    threading.Timer(start_time, lambda: client.cmd(f'sudo -u {USER} EXPERIMENT_PATH={outpath} /home/{USER}/Orca/sender.sh 4444 {orca_flow_counter} {duration} > {outpath}orca_{client.name}.json &')).start()
+
+
+def start_server(server, outpath, start_time):
+    threading.Timer(start_time, lambda: server.cmd(f'iperf3 -s --one-off --json > {outpath}iperf_{server.name}.json &')).start()
+
+def start_client(client, outpath, server_ip, start_time, duration):
+    threading.Timer(start_time, lambda: client.cmd(f'iperf3 -c {server_ip} -t {duration} -C {protocol} -i 0.5 --json > {outpath}iperf_{client.name}.json &')).start()
+
+def start_ping(client, outpath, server_ip, start_time, duration=10):
+    threading.Timer(start_time, lambda: client.cmd(f'ping {server_ip} -i 0.1 -w {duration} > {outpath}ping_{client.name}.txt &')).start()
+
+
+
+
+
 def main():
+    TOTALDURATION = 200
+    # python3.8 ~/pox/pox.py misc.learning_switch
+    # sudo python3.8 emulator.py Starlink_NY_LDN_15_ISL_path.log
+    #
+    #
+    #       Starlink_NY_LDN_15_ISL_path.log
+    #       Starlink_SD_NY_15_BP_path.log
+    #       Starlink_SD_NY_15_ISL_path.log
+    #       Starlink_SD_SEA_15_BP_path.log
+    #       Starlink_SD_Shanghai_15_ISL_path.log
+    #       Starlink_SEA_NY_15_BP_path.log
+    #
+
+    delete_old_files()
     my_logger.info("START MININET LEO SATELLITE NETWORK SIMULATION!")
     links = read_link_info(path_info_file)
+    out_path = f"{path_info_file.split('.')[0]}/QSize_{switch_queue_size}/2_flows/algo_{protocol}/run_{run}/"
+    mkdir(out_path)
     my_topo = MyTopo()
     print("create the network")
     net = Mininet(topo=my_topo, link=TCLink, controller=None, xterms=False, host=CPULimitedHost, autoPinCpus=True, autoSetMacs=True)
@@ -323,21 +394,29 @@ def main():
     clients = [net.get(f'c{i+1}') for i in range(NODES)]
     servers = [net.get(f'x{i+1}') for i in range(NODES)]
 
-    for client, server in zip(clients, servers):
-        print(client.cmd('ping -c 3 ' + server.IP()))
-        print(server.cmd('ping -c 3 ' + client.IP()))
+        
+    for i, server in enumerate(servers):
+        print(f"Scheduling iperf server on {server} to start at {start_times[i]} seconds")
+        if protocol == 'orca':
+            start_orca_client(server, out_path, servers[i].IP(), start_times[i])
+        else:
+            start_server(server, out_path, start_times[i])
 
-        print(f"Starting iperf server on {server}")
-        result = server.cmd('iperf3 -s -D')
-        print(result)
+    for i, client in enumerate(clients):
+        print(f"Scheduling iperf client on {client} to start at {start_times[i]} seconds")
+        if protocol == 'orca':
+            start_orca_server(client, out_path,  start_times[i], TOTALDURATION - start_times[i])
+        else:
+            start_client(client, out_path, servers[i].IP(), start_times[i], TOTALDURATION - start_times[i])
+        # print(f"Scheduling ping on {client} to start at {start_times[i]} seconds")
+        # start_ping(client, servers[i].IP(), start_times[i], 269)
 
-        print(f"Starting iperf client on {client}")
-        result = client.cmd(f'iperf3 -c {server.IP()} -t 10 -C bbr -i 0.2 --json > iperf_{client.name}.txt &')
-        print(result)
-        print(server.cmd('ps aux | grep iperf3'))
 
+   
     print("start dynamic link simulation")
     update_precomputed_link(links, net)
+    
+
 
     net.stop()
 
