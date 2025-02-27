@@ -2,6 +2,7 @@ from mininet.topo import Topo
 from mininet.node import CPULimitedHost
 from mininet.node import RemoteController
 from mininet.link import TCLink
+from mininet.link import TCIntf
 from mininet.net import Mininet
 from mininet.log import lg
 from mininet.util import dumpNodeConnections
@@ -36,8 +37,9 @@ REMOTE_CONTROLLER_IP = "127.0.0.1"
 kernel_output = open('/dev/kmsg', 'w')
 status_report_delayed_shift = -0.5
 
+
 if len(sys.argv) != 6:
-    print("6 args, path_info_file, start_times, switch_queue_size, protocol, run")
+    print(f"6 args, path_info_file, start_times, switch_queue_size, protocol, run we have {len(sys.argv)}")
     exit()
 
 intermediate_hop_num = 0
@@ -45,7 +47,7 @@ frame_length = 1
 path_info_file = sys.argv[1]
 
 start_times = list(map(float, sys.argv[2].strip('[]').split(',')))
-NODES = len(start_times)
+NODES = 1
 
 USER = 'mihai'
 
@@ -58,6 +60,8 @@ bent_pipe_link_bandwidth = 100
 unitialized_bent_pipe_delay = '0.01ms'
 
 switch_queue_size = int(sys.argv[3])
+
+
 protocol = sys.argv[4]
 run = sys.argv[5]
 
@@ -126,7 +130,7 @@ class MyTopo(Topo):
         clients = []
         servers = []
         for i in range(NODES):
-            clients.append(self.addHost(f'c{i+1}', ip=f"10.0.{i+1}.101/24"))
+            clients.append(self.addHost(f'c{i+1}', ip=f"10.0.{i+1}.101/24")) # , inNamespace=False
             servers.append(self.addHost(f'x{i+1}', ip=f"10.0.{i+1}.102/24"))
 
         for i in range(intermediate_hop_num):
@@ -137,7 +141,7 @@ class MyTopo(Topo):
 
         for i in range(NODES):
             self.addLink(f"c{i+1}", "s0", bw=bent_pipe_link_bandwidth, delay=unitialized_bent_pipe_delay, max_queue_size=switch_queue_size)
-            self.addLink(f"x{i+1}", "s%s" % (intermediate_hop_num - 1), bw=bent_pipe_link_bandwidth, delay=unitialized_bent_pipe_delay, max_queue_size=switch_queue_size)
+            self.addLink(f"x{i+1}", "s%s" % (intermediate_hop_num - 1), bw=bent_pipe_link_bandwidth, delay=unitialized_bent_pipe_delay,  max_queue_size=switch_queue_size)
 
 def set_link_properties(net, node1, node2, bw, delay, max_queue_size=switch_queue_size):
     hop_a = net.getNodeByName(node1)
@@ -145,16 +149,17 @@ def set_link_properties(net, node1, node2, bw, delay, max_queue_size=switch_queu
     interfaces = hop_a.connectionsTo(hop_b)
     src_intf = interfaces[0][0]
     dst_intf = interfaces[0][1]
-    src_intf.config(bw=bw, delay=delay, max_queue_size=switch_queue_size, smooth_change=True)
-    dst_intf.config(bw=bw, delay=delay, max_queue_size=switch_queue_size, smooth_change=True)
+    src_intf.config(bw=bw, delay=delay, max_queue_size=max_queue_size, smooth_change=True)
+    dst_intf.config(bw=bw, delay=delay, max_queue_size=max_queue_size, smooth_change=True)
+
 
 def initialize_link(net):
     for i in range(intermediate_hop_num - 1):
-        set_link_properties(net, "s%s" % str(i), "s%s" % str(i + 1), bent_pipe_link_bandwidth, unitialized_bent_pipe_delay, max_queue_size=switch_queue_size)
+        set_link_properties(net, f"s{str(i)}", f"s{str(i + 1)}", bent_pipe_link_bandwidth, unitialized_bent_pipe_delay, max_queue_size=switch_queue_size)
 
     for i in range(NODES):
         set_link_properties(net, f"c{i+1}", "s0", bent_pipe_link_bandwidth, unitialized_bent_pipe_delay, max_queue_size=switch_queue_size)
-        set_link_properties(net, f"x{i+1}", "s%s" % (intermediate_hop_num - 1), bent_pipe_link_bandwidth, unitialized_bent_pipe_delay, max_queue_size=switch_queue_size)
+        set_link_properties(net, f"x{i+1}", f"s{intermediate_hop_num - 1}", bent_pipe_link_bandwidth, unitialized_bent_pipe_delay, max_queue_size=switch_queue_size)
 
 def update_precomputed_link(link_info_all_cycles, net):
     print("cycle numbers:", len(link_info_all_cycles))
@@ -329,41 +334,43 @@ def rmdir(path):
         if not (os.path.isdir(path) and os.path.exists(path)):
             raise
 
-def delete_old_files():
-    for filename in glob.glob('iperf*'):
-        if os.path.isfile(filename):
-            os.remove(filename)
-            my_logger.info(f"Deleted old file: {filename}")
-    for filename in glob.glob('ping*'):
-        if os.path.isfile(filename):
-            os.remove(filename)
-            my_logger.info(f"Deleted old file: {filename}")
-
-orca_flow_counter = 0
-
-def start_orca_client(server, outpath, server_ip, start_time):
-    threading.Timer(start_time, lambda: server.cmd(f'sudo -u {USER} /home/{USER}/Orca/receiver.sh {server_ip} 4444 0 > {outpath}orca_{server.name}.json &')).start()
-
-def start_orca_server(client, outpath, start_time, duration):
-    threading.Timer(start_time, lambda: client.cmd(f'sudo -u {USER} EXPERIMENT_PATH={outpath} /home/{USER}/Orca/sender.sh 4444 {orca_flow_counter} {duration} > {outpath}orca_{client.name}.json &')).start()
-
-
-def start_server(server, outpath, start_time):
-    threading.Timer(start_time, lambda: server.cmd(f'iperf3 -s --one-off --json > {outpath}iperf_{server.name}.json &')).start()
-
-def start_client(client, outpath, server_ip, start_time, duration):
-    threading.Timer(start_time, lambda: client.cmd(f'iperf3 -c {server_ip} -t {duration} -C {protocol} -i 0.5 --json > {outpath}iperf_{client.name}.json &')).start()
-
-def start_ping(client, outpath, server_ip, start_time, duration=10):
-    threading.Timer(start_time, lambda: client.cmd(f'ping {server_ip} -i 0.1 -w {duration} > {outpath}ping_{client.name}.txt &')).start()
-
-
-
-
 
 def main():
-    TOTALDURATION = 200
-    # python3.8 ~/pox/pox.py misc.learning_switch
+    current_directory = os.getcwd()
+    TOTALDURATION = 20
+    orca_flow_counter = 0
+    astraea_flows_counter = 0
+
+    def start_orca_client(server, outpath, server_ip, start_time):
+        threading.Timer(start_time, lambda: server.cmd(f'sudo -u {USER} {current_directory}/CC/Orca/receiver.sh {server_ip} 4444 0 {current_directory}/CC/Orca > {outpath}orca_{server.name}.txt &')).start()
+
+    def start_orca_server(client, outpath, start_time, duration):
+        threading.Timer(start_time, lambda: client.cmd(f'sudo -u {USER} EXPERIMENT_PATH={outpath} {current_directory}/CC/Orca/sender.sh 4444 {orca_flow_counter} {duration} {current_directory}/CC/Orca > {outpath}orca_{client.name}.txt &')).start()
+        nonlocal orca_flow_counter # ??????????????????????????????????
+        orca_flow_counter += 1
+
+    def start_astraea_client(server, outpath, start_time, server_ip, duration):
+        nonlocal astraea_flows_counter
+        astraea_flows_counter += 1
+        cmd = f'sudo -u {USER} {current_directory}/CC/astraea-open-source/src/build/bin/client_eval --ip={server_ip} --port=5555 --cong=astraea --interval=20 --terminal-out --pyhelper={current_directory}/CC/astraea-open-source/python/infer.py --model={current_directory}/CC/astraea-open-source/models/py/ --duration={duration} --id={astraea_flows_counter} > {outpath}astraea_{server.name}.txt &'
+        print(cmd)
+        threading.Timer(start_time, lambda: server.cmd(cmd)).start() 
+    def start_astraea_server(client, outpath, start_time):
+        cmd = f'sudo -u {USER} {current_directory}/CC/astraea-open-source/src/build/bin/server --port=5555  --perf-interval=1000 --one-off --terminal-out > {outpath}astraea_{client.name}.txt &'
+        print(cmd)
+        threading.Timer(start_time, lambda: client.cmd(cmd)).start()
+
+
+    def start_server(server, outpath, start_time):
+        threading.Timer(start_time, lambda: server.cmd(f'iperf3 -s --one-off --json  -i 1 > {outpath}iperf_{server.name}.json &')).start()
+
+    def start_client(client, outpath, server_ip, start_time, duration):
+        threading.Timer(start_time, lambda: client.cmd(f'iperf3 -c {server_ip} -t {duration} -C {protocol} -i 0.1 --json > {outpath}iperf_{client.name}.json &')).start()
+
+    def start_ping(client, outpath, server_ip, start_time, duration=10):
+        threading.Timer(start_time, lambda: client.cmd(f'ping {server_ip} -i 0.1 -w {duration} > {outpath}ping_{client.name}.txt &')).start()
+
+    # python3 ~/pox/pox.py misc.learning_switch
     # sudo python3.8 emulator.py Starlink_NY_LDN_15_ISL_path.log
     #
     #
@@ -375,7 +382,7 @@ def main():
     #       Starlink_SEA_NY_15_BP_path.log
     #
 
-    delete_old_files()
+
     my_logger.info("START MININET LEO SATELLITE NETWORK SIMULATION!")
     links = read_link_info(path_info_file)
     out_path = f"{path_info_file.split('.')[0]}/QSize_{switch_queue_size}/2_flows/algo_{protocol}/run_{run}/"
@@ -398,7 +405,9 @@ def main():
     for i, server in enumerate(servers):
         print(f"Scheduling iperf server on {server} to start at {start_times[i]} seconds")
         if protocol == 'orca':
-            start_orca_client(server, out_path, servers[i].IP(), start_times[i])
+            start_orca_client(server, out_path, clients[i].IP(), start_times[i])
+        elif protocol == 'astraea':
+            start_astraea_client(server, out_path, start_times[i], clients[i].IP(), TOTALDURATION - start_times[i])
         else:
             start_server(server, out_path, start_times[i])
 
@@ -406,19 +415,20 @@ def main():
         print(f"Scheduling iperf client on {client} to start at {start_times[i]} seconds")
         if protocol == 'orca':
             start_orca_server(client, out_path,  start_times[i], TOTALDURATION - start_times[i])
+        elif protocol == 'astraea':
+            start_astraea_server(client, out_path, start_times[i])
         else:
             start_client(client, out_path, servers[i].IP(), start_times[i], TOTALDURATION - start_times[i])
-        # print(f"Scheduling ping on {client} to start at {start_times[i]} seconds")
-        # start_ping(client, servers[i].IP(), start_times[i], 269)
 
 
-   
+
+    threading.Timer(TOTALDURATION + 3, lambda: net.stop()).start()
     print("start dynamic link simulation")
     update_precomputed_link(links, net)
     
+    # CLI(net)
 
-
-    net.stop()
+    
 
 if __name__ == '__main__':
     main()
