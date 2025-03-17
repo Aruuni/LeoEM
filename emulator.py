@@ -313,8 +313,14 @@ def read_link_info(input_file_name):
     return link_info_all_cycles
 
 def extract_iperf_json_to_csv(out_path):
+    import glob, os, json, csv, re
+    # Create the CSVs folder if it doesn't exist.
     csvs_folder = os.path.join(out_path, "csvs")
     os.makedirs(csvs_folder, exist_ok=True)
+    
+    # -------------------------
+    # Process client JSON files
+    # -------------------------
     client_files = glob.glob(os.path.join(out_path, "iperf_c*.json"))
     client_data = {}
     for fp in client_files:
@@ -329,8 +335,8 @@ def extract_iperf_json_to_csv(out_path):
         if m:
             flow = int(m.group(2))
             try:
-                off = start_times[flow-1]
-            except:
+                off = start_times[flow - 1]
+            except Exception:
                 off = 0
             cid = str(flow)
         else:
@@ -339,17 +345,36 @@ def extract_iperf_json_to_csv(out_path):
         intervals = data.get("intervals", [])
         for interval in intervals:
             sdata = interval.get("sum", {})
-            ssend = interval.get("sender", {})
+            # Choose the sender stream if available; otherwise, take the first stream.
+            sender = None
+            for stream in interval.get("streams", []):
+                if stream.get("sender", False):
+                    sender = stream
+                    break
+            if sender is None and interval.get("streams"):
+                sender = interval["streams"][0]
+            # Use the 'end' time from the sum as the time stamp (plus offset)
             t_val = sdata.get("end", 0)
             new_t = float(t_val) + off
-            transferred = sdata.get("bytes", 0) / (1024*1024)
+            transferred = sdata.get("bytes", 0) / (1024 * 1024)
             bandwidth = sdata.get("bits_per_second", 0) / 1e6
-            row = {"time": new_t, "transferred": transferred, "bandwidth": bandwidth,
-                   "retr": sdata.get("retransmits", 0),
-                   "cwnd": ssend.get("cwnd", 0),
-                   "srtt": ssend.get("srtt", 0),
-                   "rttvar": ssend.get("rttvar", 0)}
+            # Get retransmits (check sender first, else fall back to sum)
+            retr = sender.get("retransmits", sdata.get("retransmits", 0))
+            cwnd = sender.get("snd_cwnd", 0)
+            # Use 'srtt' if present; otherwise, use 'rtt'. Convert from microseconds to milliseconds.
+            srtt = sender.get("srtt", sender.get("rtt", 0)) / 1000.0
+            rttvar = sender.get("rttvar", 0) / 1000.0
+
+            row = {"time": new_t,
+                   "transferred": transferred,
+                   "bandwidth": bandwidth,
+                   "retr": retr,
+                   "cwnd": cwnd,
+                   "srtt": srtt,
+                   "rttvar": rttvar}
             client_data.setdefault(cid, []).append(row)
+    
+    # Write out the client CSV files (named as c<flow>.csv)
     for cid, rows in client_data.items():
         csv_fname = os.path.join(csvs_folder, f"c{cid}.csv")
         with open(csv_fname, "w", newline="") as csvfile:
@@ -359,6 +384,10 @@ def extract_iperf_json_to_csv(out_path):
             for r in rows:
                 writer.writerow(r)
         print(f"Extracted CSV for client {cid} saved to {csv_fname}")
+    
+    # -------------------------
+    # Process server JSON files
+    # -------------------------
     server_files = glob.glob(os.path.join(out_path, "iperf_x*.json"))
     server_data = {}
     for fp in server_files:
@@ -373,8 +402,8 @@ def extract_iperf_json_to_csv(out_path):
         if m:
             flow = int(m.group(2))
             try:
-                off = start_times[flow-1]
-            except:
+                off = start_times[flow - 1]
+            except Exception:
                 off = 0
             sid = str(flow)
         else:
@@ -385,10 +414,14 @@ def extract_iperf_json_to_csv(out_path):
             sdata = interval.get("sum", {})
             t_val = sdata.get("end", 0)
             new_t = float(t_val) + off
-            transferred = sdata.get("bytes", 0) / (1024*1024)
+            transferred = sdata.get("bytes", 0) / (1024 * 1024)
             bandwidth = sdata.get("bits_per_second", 0) / 1e6
-            row = {"time": new_t, "transferred": transferred, "bandwidth": bandwidth}
+            row = {"time": new_t,
+                   "transferred": transferred,
+                   "bandwidth": bandwidth}
             server_data.setdefault(sid, []).append(row)
+    
+    # Write out the server CSV files (named as x<flow>.csv)
     for sid, rows in server_data.items():
         csv_fname = os.path.join(csvs_folder, f"x{sid}.csv")
         with open(csv_fname, "w", newline="") as csvfile:
@@ -664,31 +697,27 @@ def main():
     
     net.stop()
     
-    # After stopping the network, if protocol is 'astraea', parse Astraea outputs.
     if protocol == 'astraea':
-        # Create the csvs subfolder
         csvs_folder = os.path.join(out_path, "csvs")
         os.makedirs(csvs_folder, exist_ok=True)
-        # Process client files: rename c*.csv to x*.csv
         astraea_files_client = sorted(glob.glob(os.path.join(out_path, "c*.csv")))
         for i, file in enumerate(astraea_files_client):
-            base = os.path.basename(file)   # e.g., "c1.csv"
-            new_base = "x" + base[1:]         # becomes "x1.csv"
+            base = os.path.basename(file)
+            new_base = "x" + base[1:]        
             out_csv_file = os.path.join(csvs_folder, new_base)
             extract_astraea_output_to_csv(file, out_csv_file, start_times[i])
-        # Process server files: rename x*.csv to c*.csv
         astraea_files_server = sorted(glob.glob(os.path.join(out_path, "x*.csv")))
         for i, file in enumerate(astraea_files_server):
-            base = os.path.basename(file)   # e.g., "x1.csv"
-            new_base = "c" + base[1:]         # becomes "c1.csv"
+            base = os.path.basename(file)
+            new_base = "c" + base[1:]
             out_csv_file = os.path.join(csvs_folder, new_base)
             extract_astraea_output_to_csv(file, out_csv_file, start_times[i])
 
     
-    # Optionally, extract iperf JSON data to CSV files.
+
     else:
         extract_iperf_json_to_csv(out_path)
-    # Generate the plots based solely on the CSV files.
+
     plot_all_mn(out_path)
 if __name__ == '__main__':
     main()
