@@ -313,14 +313,8 @@ def read_link_info(input_file_name):
     return link_info_all_cycles
 
 def extract_iperf_json_to_csv(out_path):
-    import glob, os, json, csv, re
-    # Create the CSVs folder if it doesn't exist.
     csvs_folder = os.path.join(out_path, "csvs")
     os.makedirs(csvs_folder, exist_ok=True)
-    
-    # -------------------------
-    # Process client JSON files
-    # -------------------------
     client_files = glob.glob(os.path.join(out_path, "iperf_c*.json"))
     client_data = {}
     for fp in client_files:
@@ -335,8 +329,8 @@ def extract_iperf_json_to_csv(out_path):
         if m:
             flow = int(m.group(2))
             try:
-                off = start_times[flow - 1]
-            except Exception:
+                off = start_times[flow-1]
+            except:
                 off = 0
             cid = str(flow)
         else:
@@ -345,36 +339,17 @@ def extract_iperf_json_to_csv(out_path):
         intervals = data.get("intervals", [])
         for interval in intervals:
             sdata = interval.get("sum", {})
-            # Choose the sender stream if available; otherwise, take the first stream.
-            sender = None
-            for stream in interval.get("streams", []):
-                if stream.get("sender", False):
-                    sender = stream
-                    break
-            if sender is None and interval.get("streams"):
-                sender = interval["streams"][0]
-            # Use the 'end' time from the sum as the time stamp (plus offset)
+            ssend = interval.get("sender", {})
             t_val = sdata.get("end", 0)
             new_t = float(t_val) + off
-            transferred = sdata.get("bytes", 0) / (1024 * 1024)
+            transferred = sdata.get("bytes", 0) / (1024*1024)
             bandwidth = sdata.get("bits_per_second", 0) / 1e6
-            # Get retransmits (check sender first, else fall back to sum)
-            retr = sender.get("retransmits", sdata.get("retransmits", 0))
-            cwnd = sender.get("snd_cwnd", 0)
-            # Use 'srtt' if present; otherwise, use 'rtt'. Convert from microseconds to milliseconds.
-            srtt = sender.get("srtt", sender.get("rtt", 0)) / 1000.0
-            rttvar = sender.get("rttvar", 0) / 1000.0
-
-            row = {"time": new_t,
-                   "transferred": transferred,
-                   "bandwidth": bandwidth,
-                   "retr": retr,
-                   "cwnd": cwnd,
-                   "srtt": srtt,
-                   "rttvar": rttvar}
+            row = {"time": new_t, "transferred": transferred, "bandwidth": bandwidth,
+                   "retr": sdata.get("retransmits", 0),
+                   "cwnd": ssend.get("cwnd", 0),
+                   "srtt": ssend.get("srtt", 0),
+                   "rttvar": ssend.get("rttvar", 0)}
             client_data.setdefault(cid, []).append(row)
-    
-    # Write out the client CSV files (named as c<flow>.csv)
     for cid, rows in client_data.items():
         csv_fname = os.path.join(csvs_folder, f"c{cid}.csv")
         with open(csv_fname, "w", newline="") as csvfile:
@@ -384,10 +359,6 @@ def extract_iperf_json_to_csv(out_path):
             for r in rows:
                 writer.writerow(r)
         print(f"Extracted CSV for client {cid} saved to {csv_fname}")
-    
-    # -------------------------
-    # Process server JSON files
-    # -------------------------
     server_files = glob.glob(os.path.join(out_path, "iperf_x*.json"))
     server_data = {}
     for fp in server_files:
@@ -402,8 +373,8 @@ def extract_iperf_json_to_csv(out_path):
         if m:
             flow = int(m.group(2))
             try:
-                off = start_times[flow - 1]
-            except Exception:
+                off = start_times[flow-1]
+            except:
                 off = 0
             sid = str(flow)
         else:
@@ -414,14 +385,10 @@ def extract_iperf_json_to_csv(out_path):
             sdata = interval.get("sum", {})
             t_val = sdata.get("end", 0)
             new_t = float(t_val) + off
-            transferred = sdata.get("bytes", 0) / (1024 * 1024)
+            transferred = sdata.get("bytes", 0) / (1024*1024)
             bandwidth = sdata.get("bits_per_second", 0) / 1e6
-            row = {"time": new_t,
-                   "transferred": transferred,
-                   "bandwidth": bandwidth}
+            row = {"time": new_t, "transferred": transferred, "bandwidth": bandwidth}
             server_data.setdefault(sid, []).append(row)
-    
-    # Write out the server CSV files (named as x<flow>.csv)
     for sid, rows in server_data.items():
         csv_fname = os.path.join(csvs_folder, f"x{sid}.csv")
         with open(csv_fname, "w", newline="") as csvfile:
@@ -509,27 +476,104 @@ def extract_astraea_output_to_csv(in_filepath, out_csv_filepath, offset=0):
 
 
 
+def extract_sage_output_to_csv(in_filepath, out_csv_filepath, offset=0):
+    # Read and filter file lines.
+    with open(in_filepath, "r") as infile:
+        lines = [line.strip() for line in infile if line.strip()]
 
-def plot_all_mn(path: str) -> None:
+    data_lines = []
+    in_section = False
+    for line in lines:
+        if "----START----" in line:
+            in_section = True
+            continue
+        if "----END----" in line:
+            in_section = False
+            break  # Stop processing once the END marker is reached.
+        if in_section:
+            # Only include lines that look like comma-separated data.
+            if ',' in line:
+                data_lines.append(line)
+
+    if not data_lines:
+        print(f"No data found in {in_filepath}")
+        return
+
+    # Parse each data line into a list of floats.
+    parsed_data = []
+    for line in data_lines:
+        parts = [p.strip() for p in line.split(",")]
+        try:
+            row = [float(x) for x in parts]
+            parsed_data.append(row)
+        except Exception as e:
+            print(f"Skipping line due to parse error: {line} (error: {e})")
+
+    if not parsed_data:
+        print(f"No valid numerical data found in {in_filepath}")
+        return
+
+    # Adjust the time column so the smallest time becomes zero (plus the offset).
+    times = [row[0] for row in parsed_data]
+    min_time = min(times)
+    for row in parsed_data:
+        row[0] = (row[0] - min_time) + offset
+
+    # Convert the bandwidth column (index 1) from bits per second to Mbps.
+    for row in parsed_data:
+        row[1] = row[1] / 1e6
+
+    # Set headers based on the number of columns in the file.
+    num_cols = len(parsed_data[0])
+    if num_cols == 3:
+        header = ["time", "bandwidth", "bytes"]
+    elif num_cols == 4:
+        header = ["time", "bandwidth", "bytes", "totalgoodput"]
+    else:
+        header = ["time"] + [f"col{i}" for i in range(2, num_cols+1)]
+
+    # Write the parsed data to a CSV file.
+    with open(out_csv_filepath, "w", newline="") as outfile:
+        writer = csv.writer(outfile)
+        writer.writerow(header)
+        for row in parsed_data:
+            writer.writerow(row)
+
+    print(f"Extracted CSV saved to {out_csv_filepath}")
+
+# Example usage:
+# extract_sage_file_to_csv("c1.txt", "csvs/c1.csv", offset=0)
+# extract_sage_file_to_csv("x1.txt", "csvs/x1.csv", offset=0)
+
+
+def plot_all_mn_loc(path: str) -> None:
     fig, axs = plt.subplots(7, 1, figsize=(16, 36))
     
     csvs_folder = os.path.join(path, "csvs")
-    client_csv_files = glob.glob(os.path.join(csvs_folder, "c*.csv"))
-    
-    # Sort files by flow number (assuming filenames like c1.csv, c2.csv, etc.)
-    client_csv_files.sort(key=lambda f: int(re.search(r'c(\d+)', os.path.basename(f)).group(1)))
-    
+
+    # 1. Grab all c*.csv files
+    all_client_csvs = glob.glob(os.path.join(csvs_folder, "c*.csv"))
+    # 2. Filter only those that match "c" + digits + ".csv" (e.g., c1.csv, c2.csv), skipping c1_ss.csv
+    client_csv_files = sorted(
+        f for f in all_client_csvs 
+        if re.match(r'^c\d+\.csv$', os.path.basename(f))
+    )
+
     for client_file in client_csv_files:
         basename = os.path.basename(client_file)
         flow_num = re.search(r'c(\d+)', basename).group(1)
         server_file = os.path.join(csvs_folder, f"x{flow_num}.csv")
         
-        # Read client and server CSV files
+        # Read client CSV
         df_client = pd.read_csv(client_file)
+        
+        # Attempt to read SS file
         try:
             df_ss_client = pd.read_csv(os.path.join(csvs_folder, f"c{flow_num}_ss.csv"))
         except FileNotFoundError:
             df_ss_client = pd.DataFrame()
+        
+        # Attempt to read server CSV
         try:
             df_server = pd.read_csv(server_file)
         except Exception as e:
@@ -541,7 +585,7 @@ def plot_all_mn(path: str) -> None:
         axs[0].set_title("Goodput (Mbps)")
         axs[0].set_ylabel("Goodput (Mbps)")
         
-        # Panel 1: RTT (from client, try 'srtt' column)
+        # Panel 1: RTT
         if 'srtt' in df_client.columns:
             axs[1].plot(df_client['time'], df_client['srtt'], label=f'c{flow_num} RTT')
             axs[1].set_title("RTT (ms)")
@@ -573,7 +617,6 @@ def plot_all_mn(path: str) -> None:
     # Process queue files if the "queues" folder exists
     queue_dir = os.path.join(path, "queues")
     if os.path.exists(queue_dir):
-        # Optionally, extract a queue limit from the folder name (or set a default)
         match = re.search(r"_(\d+)pkts_", path)
         queue_limit = int(match.group(1)) if match else 100
         axs[5].axhline(queue_limit, color='red', linestyle='--', label='Queue Limit')
@@ -583,12 +626,14 @@ def plot_all_mn(path: str) -> None:
                 df_queue = pd.read_csv(queue_path)
                 df_queue['time'] = pd.to_numeric(df_queue['time'], errors='coerce')
                 df_queue['time'] = df_queue['time'] - df_queue['time'].min()
-                df_queue['root_pkts'] = (df_queue['root_pkts']
-                                         .str.replace('b', '')
-                                         .str.replace('K', '000')
-                                         .str.replace('M', '000000')
-                                         .str.replace('G', '000000000')
-                                         .astype(float))
+                df_queue['root_pkts'] = (
+                    df_queue['root_pkts']
+                    .str.replace('b', '')
+                    .str.replace('K', '000')
+                    .str.replace('M', '000000')
+                    .str.replace('G', '000000000')
+                    .astype(float)
+                )
                 df_queue['root_pkts'] = df_queue['root_pkts'] / 1500
                 df_queue['interval_drops'] = df_queue['root_drp'].diff().fillna(0)
                 axs[5].plot(df_queue['time'], df_queue['root_pkts'], label=f'{queue_file} - Queue Size')
@@ -596,12 +641,11 @@ def plot_all_mn(path: str) -> None:
                 axs[6].plot(df_queue['time'], df_queue['interval_drops'], linestyle='--', label=f'{queue_file} - Drops')
                 axs[6].set_title("Queue Drops (packets)")
     
-    # For each subplot, set labels, grid, and adjust limits
+    # Final layout, save, and close
     for ax in axs:
         ax.set_xlabel("Time (s)")
         ax.legend(loc='upper left')
         ax.grid(True)
-        # Dynamically adjust x limits based on data in the axis
         all_x = []
         for line in ax.get_lines():
             all_x.extend(line.get_xdata())
@@ -617,42 +661,42 @@ def plot_all_mn(path: str) -> None:
 def main():
     current_directory = os.getcwd()
     TOTALDURATION = duration_total
-    orca_flow_counter = 0
+    sage_flow_counter = 0
     astraea_flows_counter = 0
 
-    def start_orca_client(server, outpath, server_ip, start_time):
+    def start_sage_client(server, outpath, server_ip, start_time):
         threading.Timer(start_time, lambda: server.cmd(
-            f'sudo -u {USERNAME} {current_directory}/CC/Orca/receiver.sh {server_ip} 4444 0 {current_directory}/CC/Orca > {outpath}orca_{server.name}.txt &')).start()
+            f'sudo -u {USERNAME} {SAGE_INSTALL_FOLDER}/receiver.sh {server_ip} 4444 0 {SAGE_INSTALL_FOLDER} > {outpath}/{server.name}.csv &')).start()
 
-    def start_orca_server(client, outpath, start_time, duration):
-        threading.Timer(start_time, lambda: client.cmd(
-            f'sudo -u {USERNAME} EXPERIMENT_PATH={out_path} {current_directory}/CC/Orca/sender.sh 4444 {orca_flow_counter} {duration} {current_directory}/CC/Orca > {outpath}orca_{client.name}.txt &')).start()
-        nonlocal orca_flow_counter
-        orca_flow_counter += 1
+    def start_sage_server(client, outpath, start_time, duration):
+        threading.Timer(start_time, lambda: client.cmd(f'sudo {PARENT_DIR}/core/ss/ss_script_sage.sh 0.1 {out_path}/{client.name}_ss.csv &')).start()
+        threading.Timer(start_time, lambda: client.cmd(f'sudo -u {USERNAME} EXPERIMENT_PATH={out_path} {SAGE_INSTALL_FOLDER}/sender.sh 4444 {sage_flow_counter} {duration} {SAGE_INSTALL_FOLDER} > {outpath}/{client.name}.csv &')).start()
+        nonlocal sage_flow_counter
+        sage_flow_counter += 1
 
     def start_astraea_client(server, outpath, start_time, server_ip, duration):
         nonlocal astraea_flows_counter
         cmd = f'sudo -u {USERNAME} {ASTRAEA_INSTALL_FOLDER}/src/build/bin/client_eval --ip={server_ip} --port=5555 --cong=astraea --interval=20 --terminal-out --pyhelper={ASTRAEA_INSTALL_FOLDER}/python/infer.py --model={ASTRAEA_INSTALL_FOLDER}/models/py/ --duration={duration} --id={astraea_flows_counter} > {outpath}/{server.name}.csv &'
-        print(cmd)
+        printGreenFill(cmd)
+        #threading.Timer(start_time, lambda: client.cmd(f'sudo {PARENT_DIR}/core/ss/ss_script.sh 0.1 {out_path}/{client.name}_ss.csv &')).start()
         threading.Timer(start_time, lambda: server.cmd(cmd)).start() 
         astraea_flows_counter += 1
 
+
     def start_astraea_server(client, outpath, start_time):
         cmd = f'sudo -u {USERNAME} {ASTRAEA_INSTALL_FOLDER}/src/build/bin/server --port=5555 --perf-interval=1000 --one-off --terminal-out > {outpath}/{client.name}.csv &'
-        print(cmd)
+        printBlue(cmd)
         threading.Timer(start_time, lambda: client.cmd(cmd)).start()
 
     def start_server(server, outpath, start_time):
-        threading.Timer(start_time, lambda: server.cmd(
-            f'iperf3 -s --one-off --json -i 1 > {outpath}/iperf_{server.name}.json &')).start()
+        threading.Timer(start_time, lambda: server.cmd(f'iperf3 -s --one-off --json -i 1 > {outpath}/iperf_{server.name}.json &')).start()
 
     def start_client(client, outpath, server_ip, start_time, duration):
-        threading.Timer(start_time, lambda: client.cmd(
-            f'iperf3 -c {server_ip} -t {duration} -C {protocol} -i 0.1 --json > {outpath}/iperf_{client.name}.json &')).start()
+        threading.Timer(start_time, lambda: client.cmd(f'iperf3 -c {server_ip} -t {duration} -C {protocol} --cport={11111} -i 0.1 --json > {outpath}/iperf_{client.name}.json &')).start()
+        threading.Timer(start_time+0.1, lambda: client.cmd(f'sudo {PARENT_DIR}/core/ss/ss_script_iperf3.sh 0.1 {out_path}/{client.name}_ss.csv &')).start()
 
     def start_ping(client, outpath, server_ip, start_time, duration=10):
-        threading.Timer(start_time, lambda: client.cmd(
-            f'ping {server_ip} -i 0.1 -w {duration} > {outpath}ping_{client.name}.txt &')).start()
+        threading.Timer(start_time, lambda: client.cmd(f'ping {server_ip} -i 0.1 -w {duration} > {outpath}ping_{client.name}.txt &')).start()
 
     my_logger.info("START MININET LEO SATELLITE NETWORK SIMULATION!")
     links = read_link_info(path_info_file)
@@ -674,50 +718,74 @@ def main():
     clients = [net.get(f'c{i+1}') for i in range(NODES)]
     servers = [net.get(f'x{i+1}') for i in range(NODES)]
 
-    for i, server in enumerate(servers):
+    for i, (server, client) in enumerate(zip(servers, clients)):
         print(f"Scheduling iperf server on {server} to start at {start_times[i]} seconds")
-        if protocol == 'orca':
-            start_orca_client(server, out_path, clients[i].IP(), start_times[i])
+        if protocol == 'sage':
+            start_sage_client(server, out_path, client.IP(), start_times[i])
         elif protocol == 'astraea':
-            start_astraea_client(server, out_path, start_times[i], clients[i].IP(), TOTALDURATION - start_times[i])
+            start_astraea_client(client, out_path, start_times[i], server.IP(), TOTALDURATION - start_times[i])
         else:
             start_server(server, out_path, start_times[i])
 
-    for i, client in enumerate(clients):
+    for i, (client, server) in enumerate(zip(clients, servers)):
         print(f"Scheduling iperf client on {client} to start at {start_times[i]} seconds")
-        if protocol == 'orca':
-            start_orca_server(client, out_path, start_times[i], TOTALDURATION - start_times[i])
+        if protocol == 'sage':
+            start_sage_server(client, out_path, start_times[i], TOTALDURATION - start_times[i])
         elif protocol == 'astraea':
-            start_astraea_server(client, out_path, start_times[i])
+            start_astraea_server(server, out_path, start_times[i])
         else:
-            start_client(client, out_path, servers[i].IP(), start_times[i], TOTALDURATION - start_times[i])
+            start_client(client, out_path, server.IP(), start_times[i], TOTALDURATION - start_times[i])
 
     print("start dynamic link simulation")
     update_precomputed_link(links, net)
-    
     net.stop()
-    
+
+    # After stopping the network, if protocol is 'astraea', parse Astraea outputs.
     if protocol == 'astraea':
+        # Create the csvs subfolder
         csvs_folder = os.path.join(out_path, "csvs")
         os.makedirs(csvs_folder, exist_ok=True)
         astraea_files_client = sorted(glob.glob(os.path.join(out_path, "c*.csv")))
+        astraea_files_client = [f for f in astraea_files_client if re.match(r'^c\d+\.csv$', os.path.basename(f))]
         for i, file in enumerate(astraea_files_client):
-            base = os.path.basename(file)
-            new_base = "x" + base[1:]        
-            out_csv_file = os.path.join(csvs_folder, new_base)
+            base = os.path.basename(file)  
+            out_csv_file = os.path.join(csvs_folder, base)
             extract_astraea_output_to_csv(file, out_csv_file, start_times[i])
+        # Process server files: rename x*.csv to c*.csv
         astraea_files_server = sorted(glob.glob(os.path.join(out_path, "x*.csv")))
         for i, file in enumerate(astraea_files_server):
-            base = os.path.basename(file)
-            new_base = "c" + base[1:]
-            out_csv_file = os.path.join(csvs_folder, new_base)
+            base = os.path.basename(file)   # e.g., "x1.csv"       # becomes "c1.csv"
+            out_csv_file = os.path.join(csvs_folder, base)
             extract_astraea_output_to_csv(file, out_csv_file, start_times[i])
 
-    
+    elif protocol == 'sage':
+        csvs_folder = os.path.join(out_path, "csvs")
+        os.makedirs(csvs_folder, exist_ok=True)
 
+        # Get client files matching "c" followed by digits only (e.g., c1.csv, c10.csv)
+        files_client = sorted(glob.glob(os.path.join(out_path, "c*.csv")))
+        files_client = [f for f in files_client if re.match(r'^c\d+\.csv$', os.path.basename(f))]
+        
+        for i, file in enumerate(files_client):
+            base = os.path.basename(file)
+            out_csv_file = os.path.join(csvs_folder, base)
+            extract_sage_output_to_csv(file, out_csv_file, start_times[i])
+            df = parse_ss_sage_output(f"{out_path}/c{i+1}_ss.csv", start_times[i])
+            df.to_csv(f"{out_path}/csvs/c{i+1}_ss.csv", index=False)
+        # For server files, we assume no extra filtering is needed.
+        files_server = sorted(glob.glob(os.path.join(out_path, "x*.csv")))
+        print(files_server)
+        for i, file2 in enumerate(files_server):
+            base = os.path.basename(file2)
+            out_csv_file2 = os.path.join(csvs_folder, base)
+            extract_sage_output_to_csv(file2, out_csv_file2, start_times[i])
+
+    # Optionally, extract iperf JSON data to CSV files.
     else:
         extract_iperf_json_to_csv(out_path)
-
-    plot_all_mn(out_path)
+        df = parse_ss_output(f"{out_path}/c{i+1}_ss.csv", start_times[i])
+        df.to_csv(f"{out_path}/csvs/c{i+1}_ss.csv", index=False)
+    # Generate the plots based solely on the CSV files.
+    plot_all_mn_loc(out_path)
 if __name__ == '__main__':
     main()
