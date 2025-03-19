@@ -16,7 +16,7 @@ Great! Let's run the emulator.
 
 First, run this so network components in the emulator will be instructed to behave as learning switches (append `&` to run in the background):
 ```bash
-$ python3 ~/pox/pox.py misc.learning_switch
+$ python3 pox/pox.py misc.learning_switch
 ```
 Then start emulation (assume you are in `emulation_stage/`)!
 ```bash

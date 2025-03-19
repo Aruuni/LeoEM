@@ -513,17 +513,13 @@ def extract_sage_output_to_csv(in_filepath, out_csv_filepath, offset=0):
         print(f"No valid numerical data found in {in_filepath}")
         return
 
-    # Adjust the time column so the smallest time becomes zero (plus the offset).
     times = [row[0] for row in parsed_data]
     min_time = min(times)
     for row in parsed_data:
         row[0] = (row[0] - min_time) + offset
-
-    # Convert the bandwidth column (index 1) from bits per second to Mbps.
     for row in parsed_data:
         row[1] = row[1] / 1e6
 
-    # Set headers based on the number of columns in the file.
     num_cols = len(parsed_data[0])
     if num_cols == 3:
         header = ["time", "bandwidth", "bytes"]
@@ -532,7 +528,6 @@ def extract_sage_output_to_csv(in_filepath, out_csv_filepath, offset=0):
     else:
         header = ["time"] + [f"col{i}" for i in range(2, num_cols+1)]
 
-    # Write the parsed data to a CSV file.
     with open(out_csv_filepath, "w", newline="") as outfile:
         writer = csv.writer(outfile)
         writer.writerow(header)
@@ -541,9 +536,6 @@ def extract_sage_output_to_csv(in_filepath, out_csv_filepath, offset=0):
 
     print(f"Extracted CSV saved to {out_csv_filepath}")
 
-# Example usage:
-# extract_sage_file_to_csv("c1.txt", "csvs/c1.csv", offset=0)
-# extract_sage_file_to_csv("x1.txt", "csvs/x1.csv", offset=0)
 
 
 def plot_all_mn_loc(path: str) -> None:
