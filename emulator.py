@@ -670,8 +670,8 @@ def main():
         nonlocal astraea_flows_counter
         cmd = f'sudo -u {USERNAME} {ASTRAEA_INSTALL_FOLDER}/src/build/bin/client_eval --ip={server_ip} --port=5555 --cong=astraea --interval=20 --terminal-out --pyhelper={ASTRAEA_INSTALL_FOLDER}/python/infer.py --model={ASTRAEA_INSTALL_FOLDER}/models/py/ --duration={duration} --id={astraea_flows_counter} > {outpath}/{server.name}.csv &'
         printGreenFill(cmd)
-        #threading.Timer(start_time, lambda: client.cmd(f'sudo {PARENT_DIR}/core/ss/ss_script.sh 0.1 {out_path}/{client.name}_ss.csv &')).start()
-        threading.Timer(start_time, lambda: server.cmd(cmd)).start() 
+        threading.Timer(start_time, lambda: server.cmd(f'sudo {PARENT_DIR}/core/ss/ss_script.sh 0.1 {out_path}/{server.name}_ss.csv &')).start()
+        threading.Timer(start_time+0.1, lambda: server.cmd(cmd)).start() 
         astraea_flows_counter += 1
 
 
@@ -688,7 +688,7 @@ def main():
         threading.Timer(start_time+0.1, lambda: client.cmd(f'sudo {PARENT_DIR}/core/ss/ss_script_iperf3.sh 0.1 {out_path}/{client.name}_ss.csv &')).start()
 
     def start_ping(client, outpath, server_ip, start_time, duration=10):
-        threading.Timer(start_time, lambda: client.cmd(f'ping {server_ip} -i 0.1 -w {duration} > {outpath}ping_{client.name}.txt &')).start()
+        threading.Timer(start_time, lambda: client.cmd(f'ping {server_ip} -i 1 -w {duration} > {outpath}/ping.txt &')).start()
 
     my_logger.info("START MININET LEO SATELLITE NETWORK SIMULATION!")
     links = read_link_info(path_info_file)
@@ -716,6 +716,8 @@ def main():
             start_sage_client(server, out_path, client.IP(), start_times[i])
         elif protocol == 'astraea':
             start_astraea_client(client, out_path, start_times[i], server.IP(), TOTALDURATION - start_times[i])
+        elif protocol == 'ping':
+            start_ping(client, out_path, server.IP(), 0, TOTALDURATION)
         else:
             start_server(server, out_path, start_times[i])
 
@@ -725,6 +727,8 @@ def main():
             start_sage_server(client, out_path, start_times[i], TOTALDURATION - start_times[i])
         elif protocol == 'astraea':
             start_astraea_server(server, out_path, start_times[i])
+        elif protocol == 'ping':
+            continue
         else:
             start_client(client, out_path, server.IP(), start_times[i], TOTALDURATION - start_times[i])
 
@@ -732,7 +736,6 @@ def main():
     update_precomputed_link(links, net)
     net.stop()
 
-    # After stopping the network, if protocol is 'astraea', parse Astraea outputs.
     if protocol == 'astraea':
         # Create the csvs subfolder
         csvs_folder = os.path.join(out_path, "csvs")
@@ -754,7 +757,6 @@ def main():
         csvs_folder = os.path.join(out_path, "csvs")
         os.makedirs(csvs_folder, exist_ok=True)
 
-        # Get client files matching "c" followed by digits only (e.g., c1.csv, c10.csv)
         files_client = sorted(glob.glob(os.path.join(out_path, "c*.csv")))
         files_client = [f for f in files_client if re.match(r'^c\d+\.csv$', os.path.basename(f))]
         
@@ -764,15 +766,14 @@ def main():
             extract_sage_output_to_csv(file, out_csv_file, start_times[i])
             df = parse_ss_sage_output(f"{out_path}/c{i+1}_ss.csv", start_times[i])
             df.to_csv(f"{out_path}/csvs/c{i+1}_ss.csv", index=False)
-        # For server files, we assume no extra filtering is needed.
         files_server = sorted(glob.glob(os.path.join(out_path, "x*.csv")))
         print(files_server)
         for i, file2 in enumerate(files_server):
             base = os.path.basename(file2)
             out_csv_file2 = os.path.join(csvs_folder, base)
             extract_sage_output_to_csv(file2, out_csv_file2, start_times[i])
-
-    # Optionally, extract iperf JSON data to CSV files.
+    elif protocol == 'ping':
+        print("")
     else:
         extract_iperf_json_to_csv(out_path)
         df = parse_ss_output(f"{out_path}/c{i+1}_ss.csv", start_times[i])
