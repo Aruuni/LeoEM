@@ -73,6 +73,16 @@ current_node_delay = ["NULL"]
 
 switches = []
 
+handover_csv_path = None
+simulation_start = None
+
+def log_handover_event(event_time, event_type):
+    global handover_csv_path
+    with open(handover_csv_path, "a", newline="") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=["time", "event_type"])
+        writer.writerow({"time": event_time, "event_type": event_type})
+
+
 def simulate_dish_gateway_sat_handover(net_dish_sat_delay):
     try:
         net = net_dish_sat_delay[0]
@@ -80,6 +90,8 @@ def simulate_dish_gateway_sat_handover(net_dish_sat_delay):
         sat = net_dish_sat_delay[2]
         delay = net_dish_sat_delay[3]
         subprocess.run(["echo", "UNIX TIME: %s: end handover triggered!" % str(time.time())], stdout=kernel_output)
+        event_time = time.time() - simulation_start
+        log_handover_event(event_time, "end")
         net.configLinkStatus(dish, sat, 'down')
         time.sleep(delay)
         net.configLinkStatus(dish, sat, 'up')
@@ -91,6 +103,8 @@ def simulate_link_break(net_and_node_i):
         net = net_and_node_i[0]
         i = net_and_node_i[1]
         subprocess.run(["echo", "UNIX TIME: %s: intermediate handover triggered!" % str(time.time())], stdout=kernel_output)
+        event_time = time.time() - simulation_start
+        log_handover_event(event_time, "intermediate")
         net.configLinkStatus('s%s' % (i), 's%s' % (i + 1), 'down')
         net.configLinkStatus('s%s' % (i), 's%s' % (i + 1), 'up')
     except Exception as e:
@@ -347,13 +361,13 @@ def extract_iperf_json_to_csv(out_path):
             row = {"time": new_t, "transferred": transferred, "bandwidth": bandwidth,
                    "retr": sdata.get("retransmits", 0),
                    "cwnd": ssend.get("cwnd", 0),
-                   "srtt": ssend.get("srtt", 0),
+                   "rtt": ssend.get("rtt", 0),
                    "rttvar": ssend.get("rttvar", 0)}
             client_data.setdefault(cid, []).append(row)
     for cid, rows in client_data.items():
         csv_fname = os.path.join(csvs_folder, f"c{cid}.csv")
         with open(csv_fname, "w", newline="") as csvfile:
-            fieldnames = ["time", "transferred", "bandwidth", "retr", "cwnd", "srtt", "rttvar"]
+            fieldnames = ["time", "transferred", "bandwidth", "retr", "cwnd", "rtt", "rttvar"]
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
             for r in rows:
@@ -399,7 +413,6 @@ def extract_iperf_json_to_csv(out_path):
                 writer.writerow(r)
         print(f"Extracted CSV for server {sid} saved to {csv_fname}")
 
-# --- New function to extract Astraea output files ---
 def extract_astraea_output_to_csv(in_filepath, out_csv_filepath, offset=0):
 
     # Read all lines from file.
@@ -474,8 +487,6 @@ def extract_astraea_output_to_csv(in_filepath, out_csv_filepath, offset=0):
             writer.writerow(row)
     print(f"Extracted Astraea CSV saved to {out_csv_filepath}")
 
-
-
 def extract_sage_output_to_csv(in_filepath, out_csv_filepath, offset=0):
     # Read and filter file lines.
     with open(in_filepath, "r") as infile:
@@ -536,7 +547,23 @@ def extract_sage_output_to_csv(in_filepath, out_csv_filepath, offset=0):
 
     print(f"Extracted CSV saved to {out_csv_filepath}")
 
+def extract_vivace_output_to_csv(file, offset):
+    df = pd.read_csv(
+        file,
+        encoding="utf-8",
+        skip_blank_lines=True,
+        engine="python",      
+        on_bad_lines="skip" 
+    )
 
+    if "time" not in df.columns:
+        raise ValueError("Input must contain a column named 'time'.")
+    if "srtt" in df.columns:
+        df["srtt"] = pd.to_numeric(df["srtt"], errors="coerce")
+        df = df[df["time"] >= 1.0]
+    df["time"] = pd.to_numeric(df["time"], errors="coerce") + offset
+    df = df.dropna(how="all").reset_index(drop=True)
+    return df
 
 def plot_all_mn_loc(path: str) -> None:
     fig, axs = plt.subplots(7, 1, figsize=(16, 36))
@@ -632,6 +659,15 @@ def plot_all_mn_loc(path: str) -> None:
                 axs[5].set_title("Queue Size (packets)")
                 axs[6].plot(df_queue['time'], df_queue['interval_drops'], linestyle='--', label=f'{queue_file} - Drops')
                 axs[6].set_title("Queue Drops (packets)")
+    handover_csv = os.path.join(path, "handover_events.csv")
+    if os.path.exists(handover_csv):
+        df_handover = pd.read_csv(handover_csv)
+        for idx, row in df_handover.iterrows():
+            event_time = row['time']
+            # Set color based on event type: red for "end", blue for "intermediate"
+            color = 'red' if row['event_type'] == 'end' else 'blue'
+            for ax in axs:
+                ax.axvline(x=event_time, color=color, linestyle='--', linewidth=1)
     
     # Final layout, save, and close
     for ax in axs:
@@ -651,10 +687,11 @@ def plot_all_mn_loc(path: str) -> None:
     plt.close()
 
 def main():
-    current_directory = os.getcwd()
+    global protocol, simulation_start, handover_csv_path
     TOTALDURATION = duration_total
     sage_flow_counter = 0
     astraea_flows_counter = 0
+    simulation_start = time.time()  # Record simulation start time
 
     def start_sage_client(server, outpath, server_ip, start_time):
         threading.Timer(start_time, lambda: server.cmd(
@@ -674,12 +711,23 @@ def main():
         threading.Timer(start_time+0.1, lambda: server.cmd(cmd)).start() 
         astraea_flows_counter += 1
 
-
     def start_astraea_server(client, outpath, start_time):
+        
         cmd = f'sudo -u {USERNAME} {ASTRAEA_INSTALL_FOLDER}/src/build/bin/server --port=5555 --perf-interval=1000 --one-off --terminal-out > {outpath}/{client.name}.csv &'
         printBlue(cmd)
         threading.Timer(start_time, lambda: client.cmd(cmd)).start()
 
+    def start_vivace_client(server, outpath, start_time, server_ip, duration):
+        nonlocal astraea_flows_counter
+        cmd = f"sudo -u {USERNAME} LD_LIBRARY_PATH=$LD_LIBRARY_PATH:{PCC_USPACE_INSTALL_FOLDER}/pcc-gradient/sender/src {PCC_USPACE_INSTALL_FOLDER}/pcc-gradient/sender/app/gradient_descent_pcc_client {server_ip} 1738 1 --duration {duration} --interval 0.1 > {outpath}/{client.name}.csv &" 
+        printGreenFill(cmd)
+        threading.Timer(start_time+0.1, lambda: server.cmd(cmd)).start() 
+
+    def start_vivace_server(client, outpath, start_time, duration):
+        cmd = f"sudo -u {USERNAME} LD_LIBRARY_PATH=$LD_LIBRARY_PATH:{PCC_USPACE_INSTALL_FOLDER}/pcc-gradient/receiver/src {PCC_USPACE_INSTALL_FOLDER}/pcc-gradient/receiver/app/appserver --one-off --duration {duration} 1738 > {outpath}/{server.name}.csv &"
+        printBlue(cmd)
+        threading.Timer(start_time, lambda: client.cmd(cmd)).start()
+        
     def start_server(server, outpath, start_time):
         threading.Timer(start_time, lambda: server.cmd(f'iperf3 -s --one-off --json -i 1 > {outpath}/iperf_{server.name}.json &')).start()
 
@@ -695,7 +743,15 @@ def main():
     
     out_path = f"{HOME_DIR}/cctestbed/LeoEM/resutls_single_flow/{path_info_file.split('.')[0]}_{bent_pipe_link_bandwidth}mbit_{switch_queue_size}pkts_{len(start_times)}flows_{protocol}/run{run}" 
     rmdirp(out_path)
+    printGreen(out_path)
     mkdirp(out_path)
+    if (protocol == "bbr3"):
+        protocol = "bbr"
+
+    handover_csv_path = os.path.join(out_path, "handover_events.csv")
+    with open(handover_csv_path, "w", newline="") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=["time", "event_type"])
+        writer.writeheader()
     my_topo = MyTopo()
     print("create the network")
     net = Mininet(topo=my_topo, link=TCLink, controller=None, xterms=False, autoSetMacs=True)
@@ -716,6 +772,8 @@ def main():
             start_sage_client(server, out_path, client.IP(), start_times[i])
         elif protocol == 'astraea':
             start_astraea_client(client, out_path, start_times[i], server.IP(), TOTALDURATION - start_times[i])
+        elif protocol == 'vivace-uspace':
+            start_vivace_server(server, out_path, start_times[i], TOTALDURATION - start_times[i])
         elif protocol == 'ping':
             start_ping(client, out_path, server.IP(), 0, TOTALDURATION)
         else:
@@ -727,6 +785,9 @@ def main():
             start_sage_server(client, out_path, start_times[i], TOTALDURATION - start_times[i])
         elif protocol == 'astraea':
             start_astraea_server(server, out_path, start_times[i])
+        elif protocol == 'vivace-uspace':
+            
+            start_vivace_client(client, out_path, start_times[i], server.IP(), TOTALDURATION - start_times[i])
         elif protocol == 'ping':
             continue
         else:
@@ -772,6 +833,27 @@ def main():
             base = os.path.basename(file2)
             out_csv_file2 = os.path.join(csvs_folder, base)
             extract_sage_output_to_csv(file2, out_csv_file2, start_times[i])
+    elif protocol == 'vivace-uspace':
+        csvs_folder = os.path.join(out_path, "csvs")
+        os.makedirs(csvs_folder, exist_ok=True)
+
+        files_client = sorted(glob.glob(os.path.join(out_path, "c*.csv")))
+        files_client = [f for f in files_client if re.match(r'^c\d+\.csv$', os.path.basename(f))]
+        
+        for i, file in enumerate(files_client):
+            base = os.path.basename(file)
+            out_csv_file = os.path.join(csvs_folder, base)
+            df = extract_vivace_output_to_csv(file, start_times[i])
+            df.to_csv(out_csv_file, index=False)
+
+        files_server = sorted(glob.glob(os.path.join(out_path, "x*.csv")))
+
+        for i, file2 in enumerate(files_server):
+            base = os.path.basename(file2)
+            out_csv_file2 = os.path.join(csvs_folder, base)
+            df2 = extract_vivace_output_to_csv(file2, start_times[i])
+            df2.to_csv(out_csv_file2, index=False)
+        
     elif protocol == 'ping':
         print("")
     else:
