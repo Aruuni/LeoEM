@@ -694,12 +694,11 @@ def main():
     simulation_start = time.time()  # Record simulation start time
 
     def start_sage_client(server, outpath, server_ip, start_time):
-        threading.Timer(start_time, lambda: server.cmd(
-            f'sudo -u {USERNAME} {SAGE_INSTALL_FOLDER}/receiver.sh {server_ip} 4444 0 {SAGE_INSTALL_FOLDER} > {outpath}/{server.name}.csv &')).start()
-
+        threading.Timer(start_time, lambda: server.cmd(f'sudo -u {USERNAME} {SAGE_INSTALL_FOLDER}/receiver.sh {server_ip} 4444 0 {SAGE_INSTALL_FOLDER} > {outpath}/x{server.name[1:]}.csv &')).start()
+    
     def start_sage_server(client, outpath, start_time, duration):
-        threading.Timer(start_time, lambda: client.cmd(f'sudo {PARENT_DIR}/core/ss/ss_script_sage.sh 0.1 {out_path}/{client.name}_ss.csv &')).start()
-        threading.Timer(start_time, lambda: client.cmd(f'sudo -u {USERNAME} EXPERIMENT_PATH={out_path} {SAGE_INSTALL_FOLDER}/sender.sh 4444 {sage_flow_counter} {duration} {SAGE_INSTALL_FOLDER} > {outpath}/{client.name}.csv &')).start()
+        threading.Timer(start_time+2, lambda: client.cmd(f'sudo {PARENT_DIR}/core/ss/ss_script_sage.sh 0.1 {outpath}/{client.name}_ss.csv &')).start()
+        threading.Timer(start_time, lambda: client.cmd(f'sudo -u {USERNAME} EXPERIMENT_PATH={outpath} {SAGE_INSTALL_FOLDER}/sender.sh 4444 {sage_flow_counter} {duration} {SAGE_INSTALL_FOLDER} > {outpath}/{client.name[1:]}.csv &')).start()
         nonlocal sage_flow_counter
         sage_flow_counter += 1
 
