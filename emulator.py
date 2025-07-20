@@ -153,23 +153,38 @@ class MyTopo(Topo):
             switches.append(self.addSwitch('s%s' % i))
 
         for i in range(intermediate_hop_num - 1):
-            self.addLink('s%s' % i, 's%s' % (i + 1), bw=bent_pipe_link_bandwidth, delay=unitialized_bent_pipe_delay, max_queue_size=switch_queue_size)
+            self.addLink('s%s' % i, 's%s' % (i + 1))
 
         for i in range(NODES):
-            self.addLink(f"c{i+1}", "s0", bw=bent_pipe_link_bandwidth,
-                         delay=unitialized_bent_pipe_delay, max_queue_size=switch_queue_size)
-            self.addLink(f"x{i+1}", "s%s" % (intermediate_hop_num - 1),
-                         bw=bent_pipe_link_bandwidth, delay=unitialized_bent_pipe_delay, max_queue_size=switch_queue_size)
+            self.addLink(f"c{i+1}", "s0")
+            self.addLink(f"x{i+1}", f"s{intermediate_hop_num - 1}")
 
 def set_link_properties(net, node1, node2, bw, delay, max_queue_size=switch_queue_size):
-    hop_a = net.getNodeByName(node1)
-    hop_b = net.getNodeByName(node2)
-    interfaces = hop_a.connectionsTo(hop_b)
-    src_intf = interfaces[0][0]
-    dst_intf = interfaces[0][1]
-    src_intf.config(bw=bw, delay=delay, max_queue_size=max_queue_size, smooth_change=True)
-    dst_intf.config(bw=bw, delay=delay, max_queue_size=max_queue_size, smooth_change=True)
+    for a, b in ((node1, node2), (node2, node1)):
+        host = net.getNodeByName(a)
+        intf = host.connectionsTo(net.getNodeByName(b))[0][0].name
 
+        # I AM THE GOD OF QUEUEING DISCIPLINE, SECOND TO NONE 
+        burst = int(10*bent_pipe_link_bandwidth*(2**20)/250/8)
+        netem_string = f"tc qdisc replace dev {intf} root handle 1: netem delay {delay} limit {100000} "
+        host.cmd(netem_string)
+
+        tbf_string = f"tc qdisc replace dev {intf} parent 1: handle 10: tbf rate {bw}mbit burst {burst} limit {max_queue_size* 1500} "
+        host.cmd(tbf_string)
+
+
+
+
+def tcp_buffers_setup(target_bdp_bytes, multiplier=3):
+    # --- Configure TCP Buffers on all senders and receivers
+    # The send and receive buffer sizes should be set to at least
+    # 2BDP (if BBR is used as the congestion control algorithm, this should be set to even a
+    # larger value). We also want to account for the router/switch buffer size, makingsure
+    # the tcp buffere is not the bottleneck.
+
+    if multiplier:
+        os.system('sudo sysctl -w net.ipv4.tcp_rmem=\'10240 87380 %s\'' % (multiplier*(target_bdp_bytes)))
+        os.system('sudo sysctl -w net.ipv4.tcp_wmem=\'10240 87380 %s\'' % (multiplier*(target_bdp_bytes)))
 def initialize_link(net):
     for i in range(intermediate_hop_num - 1):
         set_link_properties(net, f"s{str(i)}", f"s{str(i + 1)}", bent_pipe_link_bandwidth, unitialized_bent_pipe_delay, max_queue_size=switch_queue_size)
@@ -740,7 +755,7 @@ def main():
     my_logger.info("START MININET LEO SATELLITE NETWORK SIMULATION!")
     links = read_link_info(path_info_file)
     
-    out_path = f"{HOME_DIR}/cctestbed/LeoEM/resutls_single_flow/{path_info_file.split('.')[0]}_{bent_pipe_link_bandwidth}mbit_{switch_queue_size}pkts_{len(start_times)}flows_{protocol}/run{run}" 
+    out_path = f"{HOME_DIR}/cctestbed/LeoEM/resutls_LeoEM/{path_info_file.split('.')[0]}_{bent_pipe_link_bandwidth}mbit_{switch_queue_size}pkts_{len(start_times)}flows_{protocol}/run{run}" 
     rmdirp(out_path)
     printGreen(out_path)
     mkdirp(out_path)
@@ -791,7 +806,7 @@ def main():
             continue
         else:
             start_client(client, out_path, server.IP(), start_times[i], TOTALDURATION - start_times[i])
-
+    tcp_buffers_setup(switch_queue_size* 1500, 22)
     print("start dynamic link simulation")
     update_precomputed_link(links, net)
     net.stop()
