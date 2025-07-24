@@ -166,12 +166,25 @@ def set_link_properties(net, node1, node2, bw, delay, max_queue_size=switch_queu
 
         # I AM THE GOD OF QUEUEING DISCIPLINE, SECOND TO NONE 
         burst = int(10*bent_pipe_link_bandwidth*(2**20)/250/8)
-        netem_string = f"tc qdisc replace dev {intf} root handle 1: netem delay {delay} limit {100000} "
+        netem_string = f"tc qdisc change dev {intf} root handle 1: netem delay {delay} limit {100000} "
         host.cmd(netem_string)
 
-        tbf_string = f"tc qdisc replace dev {intf} parent 1: handle 10: tbf rate {bw}mbit burst {burst} limit {max_queue_size* 1500} "
+        tbf_string = f"tc qdisc change dev {intf} parent 1: handle 10: tbf rate {bw}mbit burst 15k limit {max_queue_size* 1500} "
         host.cmd(tbf_string)
 
+
+def set_link_properties_init(net, node1, node2, bw, delay, max_queue_size=switch_queue_size):
+    for a, b in ((node1, node2), (node2, node1)):
+        host = net.getNodeByName(a)
+        intf = host.connectionsTo(net.getNodeByName(b))[0][0].name
+
+        # I AM THE GOD OF QUEUEING DISCIPLINE, SECOND TO NONE 
+        burst = int(10*bent_pipe_link_bandwidth*(2**20)/250/8)
+        netem_string = f"tc qdisc add dev {intf} root handle 1: netem delay {delay} limit {100000} "
+        host.cmd(netem_string)
+
+        tbf_string = f"tc qdisc add dev {intf} parent 1: handle 10: tbf rate {bw}mbit burst 15k limit {max_queue_size* 1500} "
+        host.cmd(tbf_string)
 
 
 
@@ -187,12 +200,12 @@ def tcp_buffers_setup(target_bdp_bytes, multiplier=3):
         os.system('sudo sysctl -w net.ipv4.tcp_wmem=\'10240 87380 %s\'' % (multiplier*(target_bdp_bytes)))
 def initialize_link(net):
     for i in range(intermediate_hop_num - 1):
-        set_link_properties(net, f"s{str(i)}", f"s{str(i + 1)}", bent_pipe_link_bandwidth, unitialized_bent_pipe_delay, max_queue_size=switch_queue_size)
+        set_link_properties_init(net, f"s{str(i)}", f"s{str(i + 1)}", bent_pipe_link_bandwidth, unitialized_bent_pipe_delay, max_queue_size=switch_queue_size)
 
     for i in range(NODES):
-        set_link_properties(net, f"c{i+1}", "s0", bent_pipe_link_bandwidth,
+        set_link_properties_init(net, f"c{i+1}", "s0", bent_pipe_link_bandwidth,
                             unitialized_bent_pipe_delay, max_queue_size=switch_queue_size)
-        set_link_properties(net, f"x{i+1}", f"s{intermediate_hop_num - 1}", bent_pipe_link_bandwidth,
+        set_link_properties_init(net, f"x{i+1}", f"s{intermediate_hop_num - 1}", bent_pipe_link_bandwidth,
                             unitialized_bent_pipe_delay, max_queue_size=switch_queue_size)
 
 def update_precomputed_link(link_info_all_cycles, net):
@@ -755,7 +768,7 @@ def main():
     my_logger.info("START MININET LEO SATELLITE NETWORK SIMULATION!")
     links = read_link_info(path_info_file)
     
-    out_path = f"{HOME_DIR}/cctestbed/LeoEM/resutls_LeoEM/{path_info_file.split('.')[0]}_{bent_pipe_link_bandwidth}mbit_{switch_queue_size}pkts_{len(start_times)}flows_{protocol}/run{run}" 
+    out_path = f"{HOME_DIR}/cctestbed/LeoEM/results_LeoEM_low_Burst/{path_info_file.split('.')[0]}_{bent_pipe_link_bandwidth}mbit_{switch_queue_size}pkts_{len(start_times)}flows_{protocol}/run{run}" 
     rmdirp(out_path)
     printGreen(out_path)
     mkdirp(out_path)
